@@ -208,7 +208,32 @@
             const source = originals[index];
             if (!source) return;
             if (el.type === 'radio') {
-                el.checked = source.checked;
+                // Không dùng SVG hay radio gốc: html2canvas có thể bỏ mất dấu checked.
+                // Vẽ bằng các thẻ HTML/CSS thông thường để xuất PDF ổn định.
+                const checked = source.checked;
+                const marker = document.createElement('span');
+                marker.setAttribute('aria-label', checked ? 'Đã chọn' : 'Chưa chọn');
+                marker.setAttribute('data-pdf-choice', checked ? 'selected' : 'empty');
+                marker.style.cssText = [
+                    'display:inline-flex', 'vertical-align:middle', 'align-items:center',
+                    'justify-content:center', 'flex:0 0 19px',
+                    'width:19px', 'height:19px', 'min-width:19px',
+                    'box-sizing:border-box', 'border-radius:50%',
+                    'border:2px solid ' + (checked ? '#4338ca' : '#94a3b8'),
+                    'background-color:' + (checked ? '#4338ca' : '#ffffff'),
+                    'margin-right:6px', 'position:relative', 'overflow:visible'
+                ].join(';');
+                if (checked) {
+                    const dot = document.createElement('span');
+                    dot.style.cssText = 'display:block;width:8px;height:8px;min-width:8px;min-height:8px;border-radius:50%;background-color:#ffffff;';
+                    marker.appendChild(dot);
+                    // Làm đậm chính phương án được chọn để nhìn rõ trên PDF.
+                    if (el.parentElement) {
+                        el.parentElement.style.color = '#3730a3';
+                        el.parentElement.style.fontWeight = '800';
+                    }
+                }
+                el.replaceWith(marker);
                 return;
             }
             const style = getComputedStyle(source);
@@ -234,25 +259,30 @@
     }
 
     function printAsPDF() {
-        // Phương án dự phòng khi jsPDF/html2canvas bị chặn bởi mạng trường học.
+        // In bản sao đã chuyển radio thành hình tròn, không in input gốc.
+        const original = document.getElementById('capture-area');
+        const copy = original.cloneNode(true);
+        copy.id = 'print-copy';
+        // QUAN TRỌNG: thay radio trong bản sao TRƯỚC khi gắn vào DOM.
+        // Nếu gắn trước, radio cùng name sẽ tự làm mất dấu chọn của phiếu gốc.
+        fillPrintValues(copy);
+        document.body.appendChild(copy);
         const style = document.createElement('style');
         style.id = 'pdf-print-rules';
         style.textContent = `@media print {
           @page { size: A4; margin: 10mm; }
-          html, body { background: white !important; padding: 0 !important; margin: 0 !important;
-            -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-          #capture-area { width:100% !important; max-width:none !important; padding:12px !important;
-            box-shadow:none !important; }
-          body > div:not(#capture-area) { display:none !important; }
-          .fade-in { animation:none !important; transform:none !important; opacity:1 !important; }
-          table, tr, td, .task-header { break-inside:avoid; page-break-inside:avoid; }
+          html, body { background:#fff !important; padding:0 !important; margin:0 !important; }
+          body > *:not(#print-copy) { display:none !important; }
+          #print-copy { display:block !important; position:static !important; width:100% !important;
+            max-width:none !important; padding:12px !important; box-shadow:none !important; }
+          #print-copy .fade-in { animation:none !important; transform:none !important; opacity:1 !important; }
+          #print-copy table, #print-copy tr, #print-copy td { break-inside:avoid; page-break-inside:avoid; }
           * { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
-          textarea { overflow:visible !important; }
         }`;
         document.head.appendChild(style);
+        const cleanup = () => { copy.remove(); style.remove(); };
+        window.addEventListener('afterprint', cleanup, { once: true });
         window.print();
-        // Print dialog is browser-controlled. Remove the temporary print stylesheet later.
-        window.addEventListener('afterprint', () => style.remove(), { once: true });
     }
 
     async function exportToPDF() {
@@ -279,9 +309,11 @@
             temporary.id = 'capture-for-pdf';
             temporary.style.cssText = 'position:absolute;left:-100000px;top:0;width:' +
                 Math.max(950, source.getBoundingClientRect().width) +
-                'px;max-width:none;background:#fff;box-shadow:none;z-index:-1;';
-            document.body.appendChild(temporary);
+                'px;max-width:none;background:#fff;box-shadow:none;pointer-events:none;';
+            // QUAN TRỌNG: khi bản sao còn tách khỏi DOM, trạng thái radio gốc vẫn nguyên.
+            // Nếu append trước, các input radio cùng name sẽ tự bỏ dấu chọn lẫn nhau.
             fillPrintValues(temporary);
+            document.body.appendChild(temporary);
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             const canvas = await window.html2canvas(temporary, {
                 backgroundColor:'#ffffff', scale:2, useCORS:true,
@@ -293,6 +325,9 @@
                 }
             });
             if (!canvas.width || !canvas.height) throw new Error('Không chụp được phiếu');
+            // Dấu chọn đã được thay bằng CSS marker đúng vị trí trước khi chụp.
+            // Không vẽ thêm lên canvas: việc quy đổi tọa độ gây ra vòng tròn thừa
+            // ở phía dưới bảng khi html2canvas thay đổi tọa độ khung bản sao.
             const { jsPDF } = window.jspdf;
             const pageWidth = 210;
             const pageHeight = pageWidth * canvas.height / canvas.width;
